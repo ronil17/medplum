@@ -49,6 +49,10 @@ async function initPool(config: MedplumDatabaseConfig, proxyEndpoint: string | u
     ssl: config.ssl,
     max: config.maxConnections ?? 100,
     idle_timeout: 120,
+    connection: {
+      statement_timeout: config.queryTimeout ?? 60000,
+      default_transaction_isolation: 'repeatable read' as const,
+    },
   };
 
   if (proxyEndpoint) {
