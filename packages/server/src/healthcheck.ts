@@ -2,7 +2,7 @@ import { MEDPLUM_VERSION } from '@medplum/core';
 import { Request, Response } from 'express';
 import os from 'node:os';
 import v8 from 'node:v8';
-import { Pool } from 'pg';
+import postgres from 'postgres';
 import { DatabaseMode, getDatabasePool } from './database';
 import { RecordMetricOptions, setGauge } from './otel/otel';
 import { getRedis } from './redis';
@@ -15,25 +15,25 @@ export async function healthcheckHandler(_req: Request, res: Response): Promise<
   const writerPool = getDatabasePool(DatabaseMode.WRITER);
   const readerPool = getDatabasePool(DatabaseMode.READER);
 
-  setGauge('medplum.db.idleConnections', writerPool.idleCount, {
-    ...BASE_METRIC_OPTIONS,
-    attributes: { ...BASE_METRIC_OPTIONS.attributes, dbInstanceType: 'writer' },
-  });
-  setGauge('medplum.db.queriesAwaitingClient', writerPool.waitingCount, {
-    ...BASE_METRIC_OPTIONS,
-    attributes: { ...BASE_METRIC_OPTIONS.attributes, dbInstanceType: 'writer' },
-  });
+  // setGauge('medplum.db.idleConnections', writerPool.stats, {
+  //   ...BASE_METRIC_OPTIONS,
+  //   attributes: { ...BASE_METRIC_OPTIONS.attributes, dbInstanceType: 'writer' },
+  // });
+  // setGauge('medplum.db.queriesAwaitingClient', writerPool.waitingCount, {
+  //   ...BASE_METRIC_OPTIONS,
+  //   attributes: { ...BASE_METRIC_OPTIONS.attributes, dbInstanceType: 'writer' },
+  // });
 
-  if (writerPool !== readerPool) {
-    setGauge('medplum.db.idleConnections', readerPool.idleCount, {
-      ...BASE_METRIC_OPTIONS,
-      attributes: { ...BASE_METRIC_OPTIONS.attributes, dbInstanceType: 'reader' },
-    });
-    setGauge('medplum.db.queriesAwaitingClient', readerPool.waitingCount, {
-      ...BASE_METRIC_OPTIONS,
-      attributes: { ...BASE_METRIC_OPTIONS.attributes, dbInstanceType: 'reader' },
-    });
-  }
+  // if (writerPool !== readerPool) {
+  //   setGauge('medplum.db.idleConnections', readerPool.idleCount, {
+  //     ...BASE_METRIC_OPTIONS,
+  //     attributes: { ...BASE_METRIC_OPTIONS.attributes, dbInstanceType: 'reader' },
+  //   });
+  //   setGauge('medplum.db.queriesAwaitingClient', readerPool.waitingCount, {
+  //     ...BASE_METRIC_OPTIONS,
+  //     attributes: { ...BASE_METRIC_OPTIONS.attributes, dbInstanceType: 'reader' },
+  //   });
+  // }
 
   let startTime = Date.now();
   const postgresWriterOk = await testPostgres(writerPool);
@@ -83,8 +83,8 @@ export async function healthcheckHandler(_req: Request, res: Response): Promise<
   });
 }
 
-async function testPostgres(pool: Pool): Promise<boolean> {
-  return (await pool.query(`SELECT 1 AS "status"`)).rows[0].status === 1;
+async function testPostgres(psql: postgres.Sql): Promise<boolean> {
+  return (await psql.unsafe(`SELECT 1 AS "status"`))[0].status === 1;
 }
 
 async function testRedis(): Promise<boolean> {

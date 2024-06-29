@@ -40,11 +40,11 @@ export async function dbStatsHandler(_req: FhirRequest): Promise<FhirResponse> {
   WHERE raw_size > 0
   ORDER BY raw_size DESC, table_name ASC`;
 
-  const results = await client.query(sql);
+  const rows = await client.unsafe(sql);
 
   let currentTable = '';
   const output: string[] = [];
-  for (const row of results.rows) {
+  for (const row of rows) {
     if (row.table_name !== currentTable) {
       output.push(
         `${row.table_name}: ${row.total_size}`,

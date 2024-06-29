@@ -1,4 +1,4 @@
-import { Pool, PoolClient } from 'pg';
+import postgres from 'postgres';
 import { MedplumDatabaseConfig, MedplumServerConfig } from './config';
 import { globalLogger } from './logger';
 import * as migrations from './migrations/schema';
@@ -8,19 +8,19 @@ export enum DatabaseMode {
   WRITER = 'writer',
 }
 
-let pool: Pool | undefined;
-let readonlyPool: Pool | undefined;
+let psql: postgres.Sql | undefined;
+let readonlyPsql: postgres.Sql | undefined;
 
-export function getDatabasePool(mode: DatabaseMode): Pool {
-  if (!pool) {
+export function getDatabasePool(mode: DatabaseMode): postgres.Sql {
+  if (!psql) {
     throw new Error('Database not setup');
   }
 
-  if (mode === DatabaseMode.READER && readonlyPool) {
-    return readonlyPool;
+  if (mode === DatabaseMode.READER && readonlyPsql) {
+    return readonlyPsql;
   }
 
-  return pool;
+  return psql;
 }
 
 export const locks = {
@@ -28,18 +28,18 @@ export const locks = {
 };
 
 export async function initDatabase(serverConfig: MedplumServerConfig): Promise<void> {
-  pool = await initPool(serverConfig.database, serverConfig.databaseProxyEndpoint);
+  psql = await initPool(serverConfig.database, serverConfig.databaseProxyEndpoint);
 
   if (serverConfig.database.runMigrations !== false) {
-    await runMigrations(pool);
+    await runMigrations(psql);
   }
 
   if (serverConfig.readonlyDatabase) {
-    readonlyPool = await initPool(serverConfig.readonlyDatabase, serverConfig.readonlyDatabaseProxyEndpoint);
+    readonlyPsql = await initPool(serverConfig.readonlyDatabase, serverConfig.readonlyDatabaseProxyEndpoint);
   }
 }
 
-async function initPool(config: MedplumDatabaseConfig, proxyEndpoint: string | undefined): Promise<Pool> {
+async function initPool(config: MedplumDatabaseConfig, proxyEndpoint: string | undefined): Promise<postgres.Sql> {
   const poolConfig = {
     host: config.host,
     port: config.port,
@@ -48,6 +48,7 @@ async function initPool(config: MedplumDatabaseConfig, proxyEndpoint: string | u
     password: config.password,
     ssl: config.ssl,
     max: config.maxConnections ?? 100,
+    idle_timeout: 120,
   };
 
   if (proxyEndpoint) {
@@ -56,71 +57,55 @@ async function initPool(config: MedplumDatabaseConfig, proxyEndpoint: string | u
     poolConfig.ssl.require = true;
   }
 
-  const pool = new Pool(poolConfig);
-
-  pool.on('error', (err) => {
-    globalLogger.error('Database connection error', err);
-  });
-
-  pool.on('connect', (client) => {
-    client.query(`SET statement_timeout TO ${config.queryTimeout ?? 60000}`).catch((err) => {
-      globalLogger.warn('Failed to set query timeout', err);
-    });
-    client.query(`SET default_transaction_isolation TO 'REPEATABLE READ'`).catch((err) => {
-      globalLogger.warn('Failed to set default transaction isolation', err);
-    });
-  });
-
-  return pool;
+  return postgres(poolConfig);
 }
 
 export async function closeDatabase(): Promise<void> {
-  if (pool) {
-    await pool.end();
-    pool = undefined;
+  if (psql) {
+    await psql.end();
+    psql = undefined;
   }
 
-  if (readonlyPool) {
-    await readonlyPool.end();
-    readonlyPool = undefined;
+  if (readonlyPsql) {
+    await readonlyPsql.end();
+    readonlyPsql = undefined;
   }
 }
 
-async function runMigrations(pool: Pool): Promise<void> {
-  let client: PoolClient | undefined;
+async function runMigrations(psql: postgres.Sql): Promise<void> {
+  let reserved: postgres.ReservedSql | undefined = undefined;
   try {
-    client = await pool.connect();
-    await client.query('SELECT pg_advisory_lock($1)', [locks.migration]);
-    await client.query(`SET statement_timeout TO 0`); // Disable timeout for migrations AFTER getting lock
-    await migrate(client);
+    reserved = await psql.reserve();
+    await reserved.unsafe('SELECT pg_advisory_lock($1)', [locks.migration]);
+    await reserved.unsafe(`SET statement_timeout TO 0`); // Disable timeout for migrations AFTER getting lock
+    await migrate(reserved);
   } catch (err: any) {
     globalLogger.error('Database schema migration error', err);
-    if (client) {
-      await client.query('SELECT pg_advisory_unlock($1)', [locks.migration]);
-      client.release(err);
-      client = undefined;
+    if (reserved) {
+      await reserved.unsafe('SELECT pg_advisory_unlock($1)', [locks.migration]);
+      reserved.release();
+      reserved = undefined;
     }
   } finally {
-    if (client) {
-      await client.query('SELECT pg_advisory_unlock($1)', [locks.migration]);
-      client.release(true); // Ensure migration connection is torn down and not re-used
-      client = undefined;
+    if (reserved) {
+      await psql.unsafe('SELECT pg_advisory_unlock($1)', [locks.migration]);
+      reserved.release();
     }
   }
 }
 
-async function migrate(client: PoolClient): Promise<void> {
-  await client.query(`CREATE TABLE IF NOT EXISTS "DatabaseMigration" (
+async function migrate(psql: postgres.Sql): Promise<void> {
+  await psql.unsafe(`CREATE TABLE IF NOT EXISTS "DatabaseMigration" (
     "id" INTEGER NOT NULL PRIMARY KEY,
     "version" INTEGER NOT NULL,
     "dataVersion" INTEGER NOT NULL
   )`);
 
-  const result = await client.query('SELECT "version" FROM "DatabaseMigration"');
-  const version = result.rows[0]?.version ?? -1;
+  const result = await psql.unsafe<{ version: number }[]>('SELECT "version" FROM "DatabaseMigration"');
+  const version = result?.[0]?.version ?? -1;
 
   if (version < 0) {
-    await client.query('INSERT INTO "DatabaseMigration" ("id", "version", "dataVersion") VALUES (1, 0, 0)');
+    await psql.unsafe('INSERT INTO "DatabaseMigration" ("id", "version", "dataVersion") VALUES (1, 0, 0)');
   }
 
   const migrationKeys = Object.keys(migrations);
@@ -128,9 +113,9 @@ async function migrate(client: PoolClient): Promise<void> {
     const migration = (migrations as Record<string, migrations.Migration>)['v' + i];
     if (migration) {
       const start = Date.now();
-      await migration.run(client);
+      // await migration.run(client);
       globalLogger.info('Database schema migration', { version: `v${i}`, duration: `${Date.now() - start} ms` });
-      await client.query('UPDATE "DatabaseMigration" SET "version"=$1', [i]);
+      await psql.unsafe('UPDATE "DatabaseMigration" SET "version"=$1', [i]);
     }
   }
 }

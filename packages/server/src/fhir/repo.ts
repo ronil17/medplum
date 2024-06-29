@@ -60,12 +60,13 @@ import {
 } from '@medplum/fhirtypes';
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
-import { Pool, PoolClient } from 'pg';
+import postgres from 'postgres';
 import { Operation, applyPatch } from 'rfc6902';
 import validator from 'validator';
 import { getConfig } from '../config';
 import { getLogger } from '../context';
 import { DatabaseMode, getDatabasePool } from '../database';
+import { globalLogger } from '../logger';
 import { getRedis } from '../redis';
 import { r4ProjectId } from '../seed';
 import {
@@ -225,9 +226,9 @@ const lookupTables: LookupTable[] = [
  * It is a thin layer on top of the database.
  * Repository instances should be created per author and project.
  */
-export class Repository extends FhirRepository<PoolClient> implements Disposable {
+export class Repository extends FhirRepository<postgres.Sql> implements Disposable {
   private readonly context: RepositoryContext;
-  private conn?: PoolClient;
+  private conn?: postgres.ReservedSql;
   private transactionDepth = 0;
   private closed = false;
   mode: RepositoryMode;
@@ -896,7 +897,7 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
    * @param conn - Database client to use for reindex operations.
    * @param resources - The resource(s) to reindex.
    */
-  async reindexResources<T extends Resource>(conn: PoolClient, resources: T[]): Promise<void> {
+  async reindexResources<T extends Resource>(conn: postgres.Sql, resources: T[]): Promise<void> {
     let resource: Resource;
     // Since the page size could be relatively large (1k+), preferring a simple for loop with re-used variables
     // eslint-disable-next-line @typescript-eslint/prefer-for-of
@@ -1229,11 +1230,11 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
    * @param client - The database client inside the transaction.
    * @param resource - The resource.
    */
-  private async writeResource(client: PoolClient, resource: Resource): Promise<void> {
+  private async writeResource(client: postgres.Sql, resource: Resource): Promise<void> {
     await new InsertQuery(resource.resourceType, [this.buildResourceRow(resource)]).mergeOnConflict().execute(client);
   }
 
-  private async batchWriteResources(client: PoolClient, resources: Resource[]): Promise<void> {
+  private async batchWriteResources(client: postgres.Sql, resources: Resource[]): Promise<void> {
     if (!resources.length) {
       return;
     }
@@ -1251,7 +1252,7 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
    * @param client - The database client inside the transaction.
    * @param resource - The resource.
    */
-  private async writeResourceVersion(client: PoolClient, resource: Resource): Promise<void> {
+  private async writeResourceVersion(client: postgres.Sql, resource: Resource): Promise<void> {
     const resourceType = resource.resourceType;
     const meta = resource.meta as Meta;
     const content = stringify(resource);
@@ -1587,7 +1588,7 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
    * @param resource - The resource to index.
    * @param create - If true, then the resource is being created.
    */
-  private async writeLookupTables(client: PoolClient, resource: Resource, create: boolean): Promise<void> {
+  private async writeLookupTables(client: postgres.Sql, resource: Resource, create: boolean): Promise<void> {
     await Promise.all(lookupTables.map((lookupTable) => lookupTable.indexResource(client, resource, create)));
   }
 
@@ -1596,7 +1597,7 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
    * @param client - The database client inside the transaction.
    * @param resource - The resource to delete.
    */
-  private async deleteFromLookupTables(client: Pool | PoolClient, resource: Resource): Promise<void> {
+  private async deleteFromLookupTables(client: postgres.Sql, resource: Resource): Promise<void> {
     for (const lookupTable of lookupTables) {
       await lookupTable.deleteValuesForResource(client, resource);
     }
@@ -2029,12 +2030,12 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
    * Use this method when you don't care if you're in a transaction or not.
    * For example, use this method for "read by ID".
    * The return value can either be a pool client or a pool.
-   * If in a transaction, then returns the transaction client (PoolClient).
+   * If in a transaction, then returns the transaction client (postgres.Sql).
    * Otherwise, returns the pool (Pool).
    * @param mode - The database mode.
    * @returns The database client.
    */
-  getDatabaseClient(mode: DatabaseMode): Pool | PoolClient {
+  getDatabaseClient(mode: DatabaseMode): postgres.Sql {
     this.assertNotClosed();
     if (this.conn) {
       // If in a transaction, then use the transaction client.
@@ -2053,10 +2054,10 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
    * @param mode - The database mode.
    * @returns Database connection.
    */
-  private async getConnection(mode: DatabaseMode): Promise<PoolClient> {
+  private async getConnection(mode: DatabaseMode): Promise<postgres.ReservedSql> {
     this.assertNotClosed();
     if (!this.conn) {
-      this.conn = await getDatabasePool(mode).connect();
+      this.conn = await getDatabasePool(mode).reserve();
     }
     return this.conn;
   }
@@ -2069,13 +2070,14 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
    */
   private releaseConnection(err?: boolean | Error): void {
     if (this.conn) {
-      this.conn.release(err);
+      this.conn.release();
       this.conn = undefined;
     }
+    globalLogger.error(err instanceof Error ? normalizeErrorString(err) : 'Error');
   }
 
   async withTransaction<TResult>(
-    callback: (client: PoolClient) => Promise<TResult>,
+    callback: (client: postgres.Sql) => Promise<TResult>,
     options?: { serializable: boolean }
   ): Promise<TResult> {
     try {
@@ -2092,14 +2094,16 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
     }
   }
 
-  private async beginTransaction(isolationLevel: TransactionIsolationLevel = 'REPEATABLE READ'): Promise<PoolClient> {
+  private async beginTransaction(
+    isolationLevel: TransactionIsolationLevel = 'REPEATABLE READ'
+  ): Promise<postgres.ReservedSql> {
     this.assertNotClosed();
     this.transactionDepth++;
     const conn = await this.getConnection(DatabaseMode.WRITER);
     if (this.transactionDepth === 1) {
-      await conn.query('BEGIN ISOLATION LEVEL ' + isolationLevel);
+      await conn.unsafe('BEGIN ISOLATION LEVEL ' + isolationLevel);
     } else {
-      await conn.query('SAVEPOINT sp' + this.transactionDepth);
+      await conn.unsafe('SAVEPOINT sp' + this.transactionDepth);
     }
     return conn;
   }
@@ -2109,12 +2113,12 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
     const conn = await this.getConnection(DatabaseMode.WRITER);
     if (this.transactionDepth === 1) {
       await this.processPreCommit();
-      await conn.query('COMMIT');
+      await conn.unsafe('COMMIT');
       this.transactionDepth--;
       this.releaseConnection();
       await this.processPostCommit();
     } else {
-      await conn.query('RELEASE SAVEPOINT sp' + this.transactionDepth);
+      await conn.unsafe('RELEASE SAVEPOINT sp' + this.transactionDepth);
       this.transactionDepth--;
     }
   }
@@ -2123,11 +2127,11 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
     this.assertInTransaction();
     const conn = await this.getConnection(DatabaseMode.WRITER);
     if (this.transactionDepth === 1) {
-      await conn.query('ROLLBACK');
+      await conn.unsafe('ROLLBACK');
       this.transactionDepth--;
       this.releaseConnection(error);
     } else {
-      await conn.query('ROLLBACK TO SAVEPOINT sp' + this.transactionDepth);
+      await conn.unsafe('ROLLBACK TO SAVEPOINT sp' + this.transactionDepth);
       this.transactionDepth--;
     }
   }
@@ -2268,7 +2272,7 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
     await getRedis().del(cacheKeys);
   }
 
-  async ensureInTransaction<TResult>(callback: (client: PoolClient) => Promise<TResult>): Promise<TResult> {
+  async ensureInTransaction<TResult>(callback: (client: postgres.Sql) => Promise<TResult>): Promise<TResult> {
     if (this.transactionDepth) {
       const client = await this.getConnection(DatabaseMode.WRITER);
       return callback(client);
