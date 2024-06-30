@@ -2073,7 +2073,9 @@ export class Repository extends FhirRepository<postgres.Sql> implements Disposab
       this.conn.release();
       this.conn = undefined;
     }
-    globalLogger.error(err instanceof Error ? normalizeErrorString(err) : 'Error');
+    if (err) {
+      globalLogger.error(err instanceof Error ? normalizeErrorString(err) : 'Error while releasing connection');
+    }
   }
 
   async withTransaction<TResult>(
