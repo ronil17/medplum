@@ -7,7 +7,7 @@ set -e
 set -x
 
 # Use the Github gh tool to make sure the user is logged in
-gh auth status
+# gh auth status
 
 # Start a new branch
 DATE=$(date +%Y-%m-%d)
