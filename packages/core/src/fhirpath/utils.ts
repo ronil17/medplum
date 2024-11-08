@@ -2,7 +2,7 @@ import { Coding, Extension, Period, Quantity } from '@medplum/fhirtypes';
 import { PropertyType, TypedValue, getElementDefinition, isResource } from '../types';
 import { InternalSchemaElement } from '../typeschema/types';
 import { validationRegexes } from '../typeschema/validation';
-import { capitalize, isEmpty } from '../utils';
+import { capitalize, isCoding, isEmpty } from '../utils';
 
 /**
  * Returns a single element array with a typed boolean value.
@@ -33,6 +33,8 @@ export function toTypedValue(value: unknown): TypedValue {
     return { type: PropertyType.Quantity, value };
   } else if (isResource(value)) {
     return { type: value.resourceType, value };
+  } else if (isCoding(value)) {
+    return { type: PropertyType.Coding, value };
   } else {
     return { type: PropertyType.BackboneElement, value };
   }
