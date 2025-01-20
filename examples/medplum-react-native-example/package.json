@@ -20,12 +20,12 @@
     ]
   },
   "dependencies": {
-    "@expo/metro-runtime": "4.0.0",
+    "@expo/metro-runtime": "4.0.1",
     "@medplum/core": "3.2.27",
     "@medplum/expo-polyfills": "3.2.27",
     "@medplum/fhirtypes": "3.2.27",
     "@medplum/react-hooks": "3.2.27",
-    "expo": "52.0.25",
+    "expo": "52.0.26",
     "expo-status-bar": "2.0.1",
     "react": "18.2.0",
     "react-dom": "18.2.0",
