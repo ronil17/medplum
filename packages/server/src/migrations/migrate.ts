@@ -525,7 +525,7 @@ function getSearchParameterIndexes(
   switch (impl.searchStrategy) {
     case 'token-column': {
       return [
-        { columns: [impl.columnName], indexType: 'gin' },
+        { columns: [impl.columnName], indexType: 'gin', where: `${quotedColumnName(impl.columnName)} IS NOT NULL` },
         {
           columns: [
             {
@@ -534,6 +534,7 @@ function getSearchParameterIndexes(
             },
           ],
           indexType: 'gin',
+          where: `${quotedColumnName(impl.columnName)} IS NOT NULL`,
         },
       ];
     }
@@ -581,8 +582,8 @@ function getColumnDefinition(name: string, impl: SearchParameterImplementation):
     return {
       name,
       type: 'TEXT[]',
-      notNull: true,
-      defaultValue: 'ARRAY[]::TEXT[]',
+      // notNull: true,
+      // defaultValue: 'ARRAY[]::TEXT[]',
     };
   }
 
