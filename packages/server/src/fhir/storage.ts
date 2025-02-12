@@ -61,7 +61,7 @@ export interface BinaryStorage {
 
   copyFile(sourceKey: string, destinationKey: string): Promise<void>;
 
-  getPresignedUrl(binary: Binary): Promise<string>;
+  getPresignedUrl(binary: Binary, options?: { filename?: string }): Promise<string>;
 }
 
 /**

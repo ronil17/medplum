@@ -112,22 +112,39 @@ export class S3Storage implements BinaryStorage {
    * https://docs.aws.amazon.com/AWSJavaScriptSDK/v3/latest/modules/_aws_sdk_cloudfront_signer.html
    *
    * @param binary - Binary resource.
+   * @param options - Optional options.
+   * @param options.filename - If specified, the filename is included in the Content-Disposition header.
    * @returns Presigned URL to access the binary data.
    */
-  async getPresignedUrl(binary: Binary): Promise<string> {
+  async getPresignedUrl(binary: Binary, options?: { filename?: string }): Promise<string> {
     const config = getConfig();
+
+    const contentDisposition = options?.filename
+      ? `attachment; filename="${encodeURIComponent(options.filename)}"`
+      : undefined;
 
     if (!config.signingKey || !config.signingKeyId) {
       const Key = this.getKey(binary);
-      return s3GetSignedUrl(this.client, new GetObjectCommand({ Bucket: this.bucket, Key }), { expiresIn: 3600 });
+      return s3GetSignedUrl(
+        this.client,
+        new GetObjectCommand({
+          Bucket: this.bucket,
+          Key,
+          ResponseContentDisposition: contentDisposition,
+        }),
+        { expiresIn: 3600 }
+      );
     }
 
     const storageBaseUrl = config.storageBaseUrl;
-    const unsignedUrl = concatUrls(storageBaseUrl, `${binary.id}/${binary.meta?.versionId}`);
     const dateLessThan = new Date();
     dateLessThan.setHours(dateLessThan.getHours() + 1);
+    const unsignedUrl = new URL(concatUrls(storageBaseUrl, `${binary.id}/${binary.meta?.versionId}`));
+    if (contentDisposition) {
+      unsignedUrl.searchParams.set('response-content-disposition', contentDisposition);
+    }
     return getSignedUrl({
-      url: unsignedUrl,
+      url: unsignedUrl.toString(),
       keyPairId: config.signingKeyId,
       dateLessThan: dateLessThan.toISOString(),
       privateKey: config.signingKey,

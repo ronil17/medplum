@@ -84,7 +84,7 @@ class Rewriter {
 
       const entries = [];
       for (const entry of Object.entries(input)) {
-        entries.push(await this.rewriteProperty(entry));
+        entries.push(await this.rewriteProperty(entry, input));
       }
       return Object.fromEntries(entries) as unknown as T;
     }
@@ -97,10 +97,11 @@ class Rewriter {
    * @param keyValue - The key/value pair to rewrite.
    * @param keyValue."0" - The key.
    * @param keyValue."1" - The value.
+   * @param context - The context object.
    * @returns The rewritten key/value pair.
    */
-  async rewriteProperty([key, value]: [string, any]): Promise<[string, any]> {
-    const url = await this.rewriteAttachmentUrl([key, value]);
+  async rewriteProperty([key, value]: [string, any], context: object): Promise<[string, any]> {
+    const url = await this.rewriteAttachmentUrl([key, value], context);
     if (url) {
       return [key, url];
     }
@@ -115,9 +116,10 @@ class Rewriter {
    * @param keyValue - The key/value pair to rewrite.
    * @param keyValue."0" - The key.
    * @param keyValue."1" - The value.
+   * @param context - The context object.
    * @returns The rewritten URL or undefined.
    */
-  async rewriteAttachmentUrl([key, value]: [string, any]): Promise<string | boolean | undefined> {
+  async rewriteAttachmentUrl([key, value]: [string, any], context: object): Promise<string | boolean | undefined> {
     if ((key !== 'url' && key !== 'path') || typeof value !== 'string') {
       // Not a URL property or not a string value.
       return undefined;
@@ -129,6 +131,8 @@ class Rewriter {
       return value;
     }
 
+    const filename = 'title' in context && typeof context.title === 'string' ? context.title : undefined;
+
     let result = this.cache[value];
     if (!result) {
       if (this.mode === RewriteMode.REFERENCE) {
@@ -136,7 +140,7 @@ class Rewriter {
         result = `Binary/${id}`;
       } else {
         // Try to return the presigned URL
-        result = await this.getAttachmentPresignedUrl(id, versionId);
+        result = await this.getAttachmentPresignedUrl(id, versionId, filename);
       }
       this.cache[value] = result;
     }
@@ -147,9 +151,10 @@ class Rewriter {
    * Tries to generate a presigned URL for the binary.
    * @param id - The binary ID.
    * @param versionId - Optional binary version ID.
+   * @param filename - Optional filename.
    * @returns The attachment presigned URL.
    */
-  async getAttachmentPresignedUrl(id: string, versionId?: string): Promise<string> {
+  async getAttachmentPresignedUrl(id: string, versionId?: string, filename?: string): Promise<string> {
     let binary: Binary;
     try {
       if (versionId) {
@@ -165,7 +170,7 @@ class Rewriter {
       return `Binary/${id}`;
     }
 
-    return getBinaryStorage().getPresignedUrl(binary);
+    return getBinaryStorage().getPresignedUrl(binary, { filename });
   }
 }
 
