@@ -8,6 +8,7 @@ import { Request } from 'express';
 import internal, { Readable } from 'stream';
 import { loadTestConfig } from '../../config';
 import { getBinaryStorage, initBinaryStorage } from '../../fhir/storage';
+import { randomUUID } from 'crypto';
 
 describe('Storage', () => {
   let mockS3Client: AwsClientStub<S3Client>;
@@ -184,5 +185,24 @@ describe('Storage', () => {
       Bucket: 'foo',
       Key: 'binary/789/012',
     });
+  });
+
+  test('Presign URL', async () => {
+    jest.useFakeTimers();
+    initBinaryStorage('s3:foo');
+
+    const storage = getBinaryStorage();
+
+    const binary = {
+      resourceType: 'Binary',
+      id: randomUUID(),
+      meta: {
+        versionId: randomUUID(),
+      },
+    } as Binary;
+
+    jest.setSystemTime(new Date('2023-02-10T00:00:00.000Z'));
+    const url = await storage.getPresignedUrl(binary);
+    expect(url).toMatch(/\?Expires=1675990800&Key-Pair-Id=/);
   });
 });
